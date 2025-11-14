@@ -1,8 +1,93 @@
-from pyiron_core.pyiron_nodes.atomistic.calculator.data import InputCalcMD
 from pyiron_core.pyiron_workflow import as_function_node
-from typing import Optional
-import ase.units as units
-import numpy as np
+
+@as_function_node
+def GetElementDistributions(trajectory, initial_structure, initial_step: int, n_bins: int = 50):
+    """
+    Retrieve the spatial distributions of elements along the z-axis.
+
+    Parameters
+    ----------
+    trajectory : Trajectory-like object
+        An object that provides ``positions`` (e.g. a pyiron
+        ``Trajectory`` or any object with a ``positions`` attribute).
+    initial_structure : Structure-like object
+        The reference structure that defines the atomic species,
+        lattice vectors, etc.
+    initial_step : int
+        The step from which to start analyzing the trajectory.
+    n_bins : int, optional
+        Number of bins to use for the histogram (default is 50).
+
+    Returns
+    -------
+    bin_centers : numpy.ndarray
+        The centers of the bins along the z-axis.
+    Data : dict
+        A dictionary where keys are element symbols and values are the normalized counts
+        of those elements in each bin.
+    """
+    from pyiron_atomistics.atomistics.job.atomistic import Trajectory
+    import numpy as np
+    
+    initial_step = round(initial_step/100)
+    
+    # Determine slab boundaries based on Ne and Al positions
+    ind_Al = initial_structure.select_index("Al")
+    ind_Ne = initial_structure.select_index("Ne")
+
+    slab_bot = np.max(initial_structure.positions[ind_Al, 2])
+    slab_top = np.min(initial_structure.positions[ind_Ne, 2])
+
+    # Build a pyiron Trajectory object from the supplied data
+    traj = Trajectory(positions=trajectory.positions[initial_step:], structure=initial_structure)
+    
+    elements = initial_structure.get_chemical_symbols()
+    elements = set(elements)
+    
+    
+    # Define bins for histogram along z-axis
+    # bins = np.linspace(0, initial_structure.cell[2, 2], int(n_bins) + 1)
+    bins = np.linspace(0, slab_top - slab_bot, int(n_bins) + 1)
+    
+    Data = {}
+    for element in elements:
+        # find z-coordinate of all atoms of this element from initial_step to end of trajectory
+        z_coords = [atom.position[2] for i in range(len(traj)) for atom in traj[i] if atom.symbol == element]
+        z_coords = np.array(z_coords) - slab_bot  # adjust relative to slab bottom
+        # compute histogram
+        hist, bin_edges = np.histogram(z_coords, bins=bins, density=True)
+        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+        Data[element] = bin_centers, hist 
+
+    return Data
+
+@as_function_node("fig")
+def PlotElementDistribution(element: str, Data: dict):
+    """
+    Plots the normalized density distribution of a specified element along the z-axis.
+    
+    Parameters
+    ----------
+    element : str
+        The chemical symbol of the element to plot (e.g., "Na", "F").
+    Data : dict
+        A dictionary where keys are element symbols and values are tuples of (x, y) data.
+        
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        The matplotlib figure object containing the plot.
+    """
+    
+    from matplotlib import pyplot as plt
+    
+    x, y = Data[element]
+
+    fig, ax = plt.subplots()
+    ax.plot(x, y, label=element)
+    ax.set_xlabel("Position along z-axis (Å)")
+    ax.set_ylabel("Normalized Density (1/Å)")
+    return fig
 
 @as_function_node("Charge_distribution_Ion")
 def PlotChargeDistribution(Data: dict, initial_structure, cation: str = "Na", anion: str = "F"):
@@ -116,64 +201,7 @@ def PlotElectricPotentialDistribution(Data: dict, initial_structure, cation: str
     return(fig)
 
 @as_function_node
-def GetElementDistributions(trajectory, initial_structure, initial_step: int, n_bins: int = 50):
-    """
-    Retrieve the spatial distributions of elements along the z-axis.
-
-    Parameters
-    ----------
-    trajectory : Trajectory-like object
-        An object that provides ``positions`` (e.g. a pyiron
-        ``Trajectory`` or any object with a ``positions`` attribute).
-    initial_structure : Structure-like object
-        The reference structure that defines the atomic species,
-        lattice vectors, etc.
-    initial_step : int
-        The step from which to start analyzing the trajectory.
-    n_bins : int, optional
-        Number of bins to use for the histogram (default is 50).
-
-    Returns
-    -------
-    bin_centers : numpy.ndarray
-        The centers of the bins along the z-axis.
-    Data : dict
-        A dictionary where keys are element symbols and values are the normalized counts
-        of those elements in each bin.
-    """
-    from pyiron_atomistics.atomistics.job.atomistic import Trajectory
-    import numpy as np
-    
-    # Determine slab boundaries based on Ne and Al positions
-    ind_Al = initial_structure.select_index("Al")
-    ind_Ne = initial_structure.select_index("Ne")
-
-    slab_bot = np.max(initial_structure.positions[ind_Al, 2])
-    slab_top = np.min(initial_structure.positions[ind_Ne, 2])
-
-    # Build a pyiron Trajectory object from the supplied data
-    traj = Trajectory(positions=trajectory.positions[int(initial_step):], structure=initial_structure)
-    
-    elements = initial_structure.get_chemical_symbols()
-    elements = set(elements)
-    
-    # Define bins for histogram along z-axis
-    bins = np.linspace(0, slab_top - slab_bot, int(n_bins) + 1)
-    
-    Data = {}
-    for element in elements:
-        # find z-coordinate of all atoms of this element from initial_step to end of trajectory
-        z_coords = np.array([atom.position[2] for i in range(len(traj)) for atom in traj[i] if atom.symbol == element])
-        z_coords = z_coords - slab_bot  # adjust relative to slab bottom
-        # compute histogram
-        hist, bin_edges = np.histogram(z_coords, bins=bins, density=True)
-        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-        Data[element] = bin_centers, hist 
-
-    return Data
-
-@as_function_node
-def add_ions(structure, cation: str, anion: str, n_ion_pairs: int = 2, seed: int = 42):
+def add_ions_to_water(structure, cation: str, anion: str, n_ion_pairs: int = 2, seed: int = 42):
     """
     Replace random water moleculeswith ions.
 
@@ -217,6 +245,45 @@ def add_ions(structure, cation: str, anion: str, n_ion_pairs: int = 2, seed: int
     del structure[h_indices]
 
     return structure
+
+@as_function_node
+def add_molten_salt(
+    electrode,
+    cation: str = "Na",
+    anion: str = "F",
+    water_width: float = 10.0,
+    hydrophobic_gap: float = 3.0,
+    density: float = 1.0e-24,
+):
+
+    import ase.units as units
+    import numpy as np
+    from ase.build import molecule
+    from pyiron_atomistics import ase_to_pyiron
+
+    lx, ly = electrode.cell.diagonal()[:2]
+    zmin = np.max(electrode.positions[:, 2])
+
+    # Water
+    n_mols = 1
+    mol_mass_water = 18.015  # g/mol
+
+    # Determining the supercell size size
+    mass = mol_mass_water * n_mols / units.mol  # g
+    vol_h2o = mass / density  # in A^3
+    a = vol_h2o ** (1.0 / 3.0)  # A
+    cell = np.array([lx, ly, water_width])
+    cell_repeat = (cell // a).astype(int)
+
+    H2O = molecule("H2O", cell=cell / cell_repeat)
+    H2O.set_pbc(True)
+    H2O = ase_to_pyiron(H2O).repeat(cell_repeat)
+    H2O.positions[:, 2] += zmin + hydrophobic_gap
+    H2O.set_cell(electrode.cell)
+
+    electrochemical_cell = electrode + H2O
+
+    return electrochemical_cell
 
 @as_function_node
 def IonPotential(
@@ -341,30 +408,98 @@ def IonPotential(
 
     return ion_potential
 
-@as_function_node("fig")
-def PlotElementDistribution(element: str, Data: dict):
+@as_function_node
+def MoltenSaltPotential(
+    metal: str = "Al",
+    metal_charge: float = 0.0,
+    
+    neon_charge: float = 0.0,
+    electrode_epsilon: float = 0.102,
+    electrode_sigma: float = 3.188,
+    
+    cation: str = "Na",
+    cation_charge: float = 1.0,
+    cation_epsilon: float = 0.102,
+    cation_sigma: float = 1.188,
+    
+    anion: str = "F",
+    anion_charge: float = -1.0,
+    anion_epsilon: float = 0.102,
+    anion_sigma: float = 1.188,
+    
+    ion_pair_epsilon: float = 0.102,
+    ion_pair_sigma: float = 3.188,
+):
     """
-    Plots the normalized density distribution of a specified element along the z-axis.
+    Generate a DataFrame containing LAMMPS potential parameters for ions in water.
     
-    Parameters
-    ----------
-    element : str
-        The chemical symbol of the element to plot (e.g., "Na", "F").
-    Data : dict
-        A dictionary where keys are element symbols and values are tuples of (x, y) data.
-        
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-        The matplotlib figure object containing the plot.
+    Parameters:
+    metal (str): The metal cathode element symbol.
+    metal_charge (float): The charge of the metal cathode.
+    neon_charge (float): The charge of the neon element.
+    electrode_epsilon (float): The epsilon parameter for electrode-O interactions.
+    electrode_sigma (float): The sigma parameter for electrode-O interactions.
+    cation (str): The cation element symbol.
+    cation_charge (float): The charge of the cation.
+    cation_epsilon (float): The epsilon parameter for cation-O interactions.
+    cation_sigma (float): The sigma parameter for cation-O interactions.
+    anion (str): The anion element symbol.
+    anion_charge (float): The charge of the anion.
+    anion_epsilon (float): The epsilon parameter for anion-O interactions.
+    anion_sigma (float): The sigma parameter for anion-O interactions.
+    ion_pair_epsilon (float): The epsilon parameter for cation-anion interactions.
+    ion_pair_sigma (float): The sigma parameter for cation-anion interactions.
+    
+    Returns:
+    pandas.DataFrame: A DataFrame containing the potential parameters.
     """
-    
-    from matplotlib import pyplot as plt
-    
-    x, y = Data[element]
+    import pandas
 
-    fig, ax = plt.subplots()
-    ax.plot(x, y, label=element)
-    ax.set_xlabel("Position along z-axis (Å)")
-    ax.set_ylabel("Normalized Density (1/Å)")
-    return fig
+    molten_salt_potential = pandas.DataFrame(
+        {
+            "Name": ["Molten-Salt"],
+            "Filename": [[]],
+            "Model": [["Leonard-Jones"]],
+            "Species": [[metal, "Ne", cation, anion]],
+            "Config": [
+                [
+                    "units      real\n",
+                    "dimension  3\n",
+                    "atom_style full\n",
+                    "\n",
+                    "# create groups ###\n",
+                    f"group {metal} type 1\n",  # Metal Cathode
+                    "group Ne type 2\n",        # Neon
+                    f"group {cation} type 3\n", # Cation
+                    f"group {anion} type 4\n",  # Anion
+                    "\n",
+                    "## set charges - beside manually ###\n",
+                    f"set group {metal} charge {metal_charge}\n",
+                    f"set group Ne charge {neon_charge}\n",
+                    f"set group {cation} charge {cation_charge}\n",
+                    f"set group {anion} charge {anion_charge}\n",
+                    "\n",
+                    "pair_style lj/cut/coul/long 10.0 \n",
+                    "pair_coeff * * 0.000 0.000 \n", # set all interactions to zero
+                    "# self interactions \n",
+                    "pair_coeff 1 1 0.000 0.000 \n",    # Al-Al
+                    "pair_coeff 2 2 0.102 3.188 \n",    # Ne-Ne
+                    "pair_coeff 3 3 0.350 2.62  \n",    # Cation-Cation
+                    "pair_coeff 4 4 0.010 3.000 \n",    # Anion-Anion
+                    "\n",
+                    "# cross interactions \n",
+                    "pair_coeff 1 2 {:.4} {:.4} \n".format(electrode_epsilon, electrode_sigma), # Cathode-Neon
+                    "pair_coeff 1 3 {:.4} {:.4} \n".format(cation_epsilon, cation_sigma), # Cathode-Cation
+                    "pair_coeff 1 4 {:.4} {:.4} \n".format(anion_epsilon, anion_sigma), # Cathode-Anion
+                    "pair_coeff 2 3 {:.4} {:.4} \n".format(cation_epsilon, cation_sigma), # Neon-Cation
+                    "pair_coeff 2 4 {:.4} {:.4} \n".format(anion_epsilon, anion_sigma), # Neon-Anion
+                    "pair_coeff 3 4 {:.4} {:.4} \n".format(ion_pair_epsilon, ion_pair_sigma), # cation-anion
+                    "\n",
+                    "kspace_style pppm 1.0e-5   # final npt relaxation\n",
+                    "\n",
+                ]
+            ],
+        }
+    )
+
+    return molten_salt_potential
